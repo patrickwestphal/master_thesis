@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+
+import argparse
+import logging
+import os
+
+from sklearn.cross_validation import train_test_split
+from sklearn.datasets import load_svmlight_file
+from sklearn.externals import joblib
+from sklearn import svm
+
+from ivanov.graph import dataset_manager
+
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(message)s')
+_log = logging.getLogger()
+
+
+def check_shingling_state(work_dir, wl_iterations, window_size):
+    """Check if the feature vectors have already been calculated for the same
+    parameter setting. If yes, we do not calculate them again.
+    """
+    shingling_state_file = work_dir + 'shingling_state'
+
+    if os.path.exists(shingling_state_file):
+        with open(shingling_state_file) as sh_f:
+            state_wl_iter = -1
+            state_window_size = -1
+            line = sh_f.readline()
+            if line:
+                state_wl_iter = int(line[:-1].split('=')[1])
+            line = sh_f.readline()
+            if line:
+                state_window_size = int(line[:-1].split('=')[1])
+            if state_wl_iter == wl_iterations \
+                    and state_window_size == window_size:
+                # do not calculate feature vectors again
+                return False
+
+    with open(shingling_state_file, 'w') as sh_f:
+        sh_f.write('wl_iterations=%i\n' % wl_iterations)
+        sh_f.write('window_size=%i\n' % window_size)
+
+    return True
+
+
+def svm_rbf_train(input_data_file, output_model_file, gamma, cost,
+        data_split_random_seed):
+
+    x, y = load_svmlight_file(input_data_file)
+    # TODO: the data split should be done outside of this file
+    # split data into training and validation subsets
+    X_train, X_test, y_train, y_test = train_test_split(x, y, test_size=0.33, random_state=data_split_random_seed)
+    clf = svm.SVC(C=cost, gamma=gamma)
+    clf.fit(X_train, y_train)
+    joblib.dump(clf, output_model_file, compress=True)
+
+
+if __name__ == '__main__':
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('wl_iterations', type=int)
+    argparser.add_argument('window_size', type=int)
+    argparser.add_argument('gamma', type=float)
+    argparser.add_argument('cost', type=float)
+    argparser.add_argument('data_split_random_seed', type=int)
+    argparser.add_argument('pos_examples_file')
+    argparser.add_argument('neg_examples_file')
+    argparser.add_argument('data_file', nargs='+')
+    argparser.add_argument('working_dir')
+    argparser.add_argument('output_file')
+    args = argparser.parse_args()
+
+    need_to_compute_shingles = check_shingling_state(
+        args.working_dir, args.wl_iterations, args.window_size)
+
+    svm_data_file = args.working_dir + 'svm_in_data'
+
+    # extract features
+    if need_to_compute_shingles:
+        _log.info('Building feature vectors...')
+        dataset_manager.build_sml_bench_vectors_from_rdf_chemical_data(
+            args.data_file, args.wl_iterations, svm_data_file,
+            args.pos_examples_file, args.neg_examples_file,
+            window_size=args.window_size)
+    else:
+        _log.info('Feature vectors for wl_iterations=%i and window_size=%i '
+                  'already built.' % (args.wl_iterations, args.window_size))
+
+    # train SVM
+    svm_rbf_train(svm_data_file, args.output_file, args.gamma, args.cost,
+                  args.data_split_random_seed)
+
+    print
+    "Result saved to file `{0}`.".format(args.output_file)
+
